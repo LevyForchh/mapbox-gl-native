@@ -15,6 +15,9 @@
 #include <functional>
 
 namespace mbgl {
+namespace util {
+    class Camera;
+}
 
 class Transform : private util::noncopyable {
 public:
@@ -112,6 +115,9 @@ public:
     // Conversion and projection
     ScreenCoordinate latLngToScreenCoordinate(const LatLng&) const;
     LatLng screenCoordinateToLatLng(const ScreenCoordinate&, LatLng::WrapMode = LatLng::Wrapped) const;
+
+    util::Camera getTrueCamera();
+    void setTrueCamera(const util::Camera& camera);
 
 private:
     MapObserver& observer;

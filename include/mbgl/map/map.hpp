@@ -10,6 +10,7 @@
 #include <mbgl/util/size.hpp>
 #include <mbgl/annotation/annotation.hpp>
 #include <mbgl/map/camera.hpp>
+#include <mbgl/util/camera.hpp>
 #include <mbgl/util/geometry.hpp>
 #include <mbgl/map/projection_mode.hpp>
 #include <mbgl/storage/resource_options.hpp>
@@ -134,6 +135,9 @@ public:
 
     bool isFullyLoaded() const;
     void dumpDebugLogs() const;
+
+    util::Camera getTrueCamera() const;
+    void setTrueCamera(const util::Camera& camera);
 
 protected:
     class Impl;

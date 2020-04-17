@@ -500,4 +500,15 @@ void Map::dumpDebugLogs() const {
     Log::Info(Event::General, "--------------------------------------------------------------------------------");
 }
 
+util::Camera Map::getTrueCamera() const {
+    return impl->transform.getTrueCamera();
+}
+
+void Map::setTrueCamera(const util::Camera& camera) {
+    impl->transform.setTrueCamera(camera);
+    impl->cameraMutated = true;
+    impl->onUpdate();
+}
+
+
 } // namespace mbgl
