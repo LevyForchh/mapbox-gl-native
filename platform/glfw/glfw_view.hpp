@@ -92,6 +92,7 @@ private:
     void updateAnimatedAnnotations();
     void toggleCustomSource();
     void toggleLocationIndicatorLayer();
+    void showFlybyDemo(double dt);
 
     void cycleDebugOptions();
     void clearAnnotations();
@@ -114,6 +115,7 @@ private:
 
     std::string testDirectory = ".";
 
+    double flyByDemoPhase = -1;
     bool fullscreen = false;
     const bool benchmark = false;
     bool tracking = false;
@@ -133,6 +135,7 @@ private:
     double lastX = 0, lastY = 0;
 
     double lastClick = -1;
+    double currentTime = 0.0;
 
     std::function<void()> changeStyleCallback;
     std::function<void()> pauseResumeCallback;

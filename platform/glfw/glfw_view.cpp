@@ -24,6 +24,8 @@
 #include <mbgl/util/logging.hpp>
 #include <mbgl/util/platform.hpp>
 #include <mbgl/util/string.hpp>
+#include <mbgl/util/camera.hpp>
+#include <mbgl/util/interpolate.hpp>
 
 #include <mapbox/cheap_ruler.hpp>
 #include <mapbox/geometry.hpp>
@@ -482,6 +484,12 @@ void GLFWView::onKey(GLFWwindow *window, int key, int /*scancode*/, int action, 
         case GLFW_KEY_G: {
             view->toggleLocationIndicatorLayer();
         } break;
+        case GLFW_KEY_Y: {
+            if (view->flyByDemoPhase >= 0)
+                view->flyByDemoPhase = -1;
+            else
+                view->flyByDemoPhase = 0;
+        } break;
         }
     }
 
@@ -500,6 +508,69 @@ void GLFWView::onKey(GLFWwindow *window, int key, int /*scancode*/, int action, 
         case GLFW_KEY_0: view->addRandomShapeAnnotations(1000); break;
         case GLFW_KEY_M: view->addAnimatedAnnotation(); break;
         }
+    }
+}
+
+namespace mbgl {
+namespace util {
+
+template<>
+struct Interpolator<mbgl::LatLng> {
+    mbgl::LatLng operator()(const mbgl::LatLng& a, const mbgl::LatLng& b, const double t) {
+        return {
+            interpolate<double>(a.latitude(), b.latitude(), t),
+            interpolate<double>(a.longitude(), b.longitude(), t),
+        };
+    }
+};
+
+}
+}
+
+void GLFWView::showFlybyDemo(double dt) {
+    //mbgl::util::Camera& camera = map->requestCameraControls();
+
+    const mbgl::LatLng trainStartPos = { 60.171367, 24.941359 };
+    const mbgl::LatLng trainEndPos = { 60.185147, 24.936668 };
+    const mbgl::LatLng cameraStartPos = { 60.167443, 24.927176 };
+    const mbgl::LatLng cameraEndPos = { 60.185107, 24.933366 };
+    const double cameraStartZoom = 15.520899;
+    const double cameraEndZoom = 17.385119;
+    const double duration = 4.0;
+
+    // Interpolate between starting and ending points
+    flyByDemoPhase += dt / duration;
+
+    auto trainPos = mbgl::util::interpolate(trainStartPos, trainEndPos, flyByDemoPhase);
+    auto cameraPos = mbgl::util::interpolate(cameraStartPos, cameraEndPos, flyByDemoPhase);
+    auto cameraZoom = mbgl::util::interpolate(cameraStartZoom, cameraEndZoom, flyByDemoPhase);
+
+    auto cam = map->getCameraOptions();
+
+    //camera.setPositionZoom(cam.center.value_or(mbgl::LatLng{ 0, 0 }), cam.zoom.value_or(1.0));
+    //camera.setPositionZoom(mbgl::LatLng{ 0, 0 }, 1.5);// mbgl::util::interpolate(1.0, 2.0, flyByDemoPhase));
+
+    // --lat="60.173184" --lon="24.943456" --zoom="16.385125"
+    //camera.setPositionZoom({ 60.173184, 24.943456 }, 16.385125);
+
+    mbgl::util::Camera camera = map->getTrueCamera();
+
+    //printf("pos0 %f %f\n", camera.getPosition()[0], camera.getPosition()[1], camera.getPosition()[2]);
+    camera.setPositionZoom(cameraPos, cameraZoom);
+    camera.lookAtPoint(trainPos);
+
+    map->setTrueCamera(camera);
+
+    //camera = map->getTrueCamera();
+    //printf("pos1 %f %f\n", camera.getPosition()[0], camera.getPosition()[1], camera.getPosition()[2]);
+    //// Zoom is a property of the map so update it separately.
+    //mbgl::CameraOptions o;
+    //map->jumpTo(o.withZoom(cameraZoom));
+    //map->requestCameraControls();
+    
+    if (flyByDemoPhase > 1.0) {
+        flyByDemoPhase = -1.0;
+        //map->releaseCameraControls();
     }
 }
 
@@ -842,7 +913,7 @@ void GLFWView::run() {
 
         glfwPollEvents();
 
-        if (dirty && rendererFrontend) {
+        if ((dirty || flyByDemoPhase >= 0.0) && rendererFrontend) {
             dirty = false;
             const double started = glfwGetTime();
 
@@ -851,15 +922,21 @@ void GLFWView::run() {
 
             updateAnimatedAnnotations();
 
+            if (flyByDemoPhase >= 0.0) {
+
+                showFlybyDemo(glfwGetTime() - currentTime);
+            }
+
+            currentTime = glfwGetTime();
+
             mbgl::gfx::BackendScope scope { backend->getRendererBackend() };
 
             rendererFrontend->render();
 
             report(1000 * (glfwGetTime() - started));
-            if (benchmark) {
+            if (benchmark || flyByDemoPhase >= 0) {
                 invalidate();
             }
-
         }
     };
 
@@ -888,14 +965,14 @@ void GLFWView::report(float duration) {
     frames++;
     frameTime += duration;
 
-    const double currentTime = glfwGetTime();
-    if (currentTime - lastReported >= 1) {
+    const double now = glfwGetTime();
+    if (now - lastReported >= 1) {
         frameTime /= frames;
         mbgl::Log::Info(mbgl::Event::OpenGL, "Frame time: %6.2fms (%6.2f fps)", frameTime,
             1000 / frameTime);
         frames = 0;
         frameTime = 0;
-        lastReported = currentTime;
+        lastReported = now;
     }
 }
 
