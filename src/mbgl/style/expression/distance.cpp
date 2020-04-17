@@ -97,59 +97,6 @@ double bboxToBBoxDistance(const BBox& bbox1, const BBox& bbox2, mapbox::cheap_ru
     return ruler.distance(mapbox::geometry::point<double>{0., 0.}, mapbox::geometry::point<double>{dx, dy});
 }
 
-// geoSet1 could be any geometry type, the bounding box is calculated based on the whole geometry sets
-// geoSet2 is required to be multi_line_string or multi_polygon, the bounding box is calculated based on
-// each line_string or polygon element belong to it.
-// The purpose of this function is to filter out line_string or polygon that are far away from geoSet1,
-// based on the bounding box distance.
-std::vector<std::size_t> getFilteredIndexes(const Feature::geometry_type& geoSet1,
-                                            const Feature::geometry_type& geoSet2,
-                                            mapbox::cheap_ruler::CheapRuler& ruler) {
-    auto bbox1 = getBBox(geoSet1);
-    std::vector<std::pair<double, std::size_t>> distanceList;
-    geoSet2.match(
-        [&bbox1, &distanceList, &ruler](const mapbox::geometry::multi_line_string<double>& lines) {
-            distanceList.reserve(lines.size());
-            for (std::size_t i = 0; i < lines.size(); ++i) {
-                auto bbox2 = getBBox(lines[i]);
-                auto pair = std::make_pair(bboxToBBoxDistance(bbox1, bbox2, ruler), i);
-                distanceList.insert(std::upper_bound(distanceList.begin(),
-                                                     distanceList.end(),
-                                                     pair,
-                                                     [](const std::pair<double, std::size_t>& left,
-                                                        const std::pair<double, std::size_t>& right) {
-                                                         return left.first < right.first;
-                                                     }),
-                                    std::move(pair));
-            }
-        },
-        [&bbox1, &distanceList, &ruler](const mapbox::geometry::multi_polygon<double>& polygons) {
-            distanceList.reserve(polygons.size());
-            for (std::size_t i = 0; i < polygons.size(); ++i) {
-                auto bbox2 = getBBox(polygons[i]);
-                auto pair = std::make_pair(bboxToBBoxDistance(bbox1, bbox2, ruler), i);
-                distanceList.insert(std::upper_bound(distanceList.begin(),
-                                                     distanceList.end(),
-                                                     pair,
-                                                     [](const std::pair<double, std::size_t>& left,
-                                                        const std::pair<double, std::size_t>& right) {
-                                                         return left.first < right.first;
-                                                     }),
-                                    std::move(pair));
-            }
-        },
-        [](const auto&) {});
-
-    std::vector<std::size_t> ret;
-    ret.reserve(distanceList.size());
-    for (auto iter = distanceList.begin(); iter != distanceList.end(); ++iter) {
-        if (iter == distanceList.begin() || iter->first == 0.) {
-            ret.emplace_back(iter->second);
-        }
-    }
-    return ret;
-}
-
 double pointToLineDistance(const mapbox::geometry::point<double>& point,
                            const mapbox::geometry::line_string<double>& line,
                            mapbox::cheap_ruler::CheapRuler& ruler) {
@@ -219,10 +166,10 @@ double pointSetsDistance(const mapbox::geometry::multi_point<double>& pointSet1,
 
     auto miniDist = ruler.distance(pointSet1[0], pointSet2[0]);
     DistQueue distQueue;
-    distQueue.push(std::make_tuple(0, pointSet1, pointSet2));
+    distQueue.push(std::forward_as_tuple(0, pointSet1, pointSet2));
 
     while (!distQueue.empty()) {
-        auto& distPair = distQueue.top();
+        auto distPair = distQueue.top();
         distQueue.pop();
         if (std::get<0>(distPair) > miniDist) break;
         auto& pSetA = std::get<1>(distPair);
@@ -252,11 +199,11 @@ double pointSetsDistance(const mapbox::geometry::multi_point<double>& pointSet1,
             auto pSetA1 = mapbox::geometry::multi_point<double>(pSetA.begin(), pSetA.begin() + size1);
             // If set is a line string the cutting point needs to be taken into both of the evolved sets
             auto pSetA2 = mapbox::geometry::multi_point<double>(pSetA.begin() + size1 - set1IsLine, pSetA.end());
-
+            pSetA.clear();
             auto size2 = pSetB.size() / 2;
             auto pSetB1 = mapbox::geometry::multi_point<double>(pSetB.begin(), pSetB.begin() + size2);
             auto pSetB2 = mapbox::geometry::multi_point<double>(pSetB.begin() + size2 - set2IsLine, pSetB.end());
-
+            pSetB.clear();
             const auto updateQueue = [&distQueue, &miniDist, &ruler](
                                          const mapbox::geometry::multi_point<double>& set1,
                                          const mapbox::geometry::multi_point<double>& set2) {
@@ -279,11 +226,9 @@ double pointSetsDistance(const mapbox::geometry::multi_point<double>& pointSet1,
 double pointsToLinesDistance(const mapbox::geometry::multi_point<double>& points,
                              const mapbox::geometry::multi_line_string<double>& lines,
                              mapbox::cheap_ruler::CheapRuler& ruler) {
-    auto indexes = getFilteredIndexes(points, lines, ruler);
     double dist = std::numeric_limits<double>::infinity();
-    for (const auto& index : indexes) {
-        dist = std::min(dist,
-                        pointSetsDistance(points, false /*isLineString*/, lines[index], true /*isLineString*/, ruler));
+    for (const auto& line : lines) {
+        dist = std::min(dist, pointSetsDistance(points, false /*isLineString*/, line, true /*isLineString*/, ruler));
         if (dist == 0.) return dist;
     }
     return dist;
@@ -292,11 +237,9 @@ double pointsToLinesDistance(const mapbox::geometry::multi_point<double>& points
 double lineToLinesDistance(const mapbox::geometry::line_string<double>& line,
                            const mapbox::geometry::multi_line_string<double>& lines,
                            mapbox::cheap_ruler::CheapRuler& ruler) {
-    auto indexes = getFilteredIndexes(line, lines, ruler);
     double dist = std::numeric_limits<double>::infinity();
-    for (const auto& index : indexes) {
-        dist =
-            std::min(dist, pointSetsDistance(line, true /*isLineString*/, lines[index], true /*isLineString*/, ruler));
+    for (const auto& l : lines) {
+        dist = std::min(dist, pointSetsDistance(line, true /*isLineString*/, l, true /*isLineString*/, ruler));
         if (dist == 0.) return dist;
     }
     return dist;
