@@ -9,6 +9,7 @@
 #include <mbgl/util/projection.hpp>
 #include <mbgl/util/mat4.hpp>
 #include <mbgl/util/size.hpp>
+#include <mbgl/util/camera.hpp>
 
 #include <cstdint>
 #include <array>
@@ -218,6 +219,9 @@ public:
     const mat4& getProjectionMatrix() const;
     const mat4& getInvProjectionMatrix() const;
 
+    util::Camera getTrueCamera() const;
+    void setTrueCamera(const util::Camera& camera_);
+
 private:
     bool rotatedNorth() const;
 
@@ -248,8 +252,13 @@ private:
     void updateMatricesIfNeeded() const;
     bool needsMatricesUpdate() const { return requestMatricesUpdate; }
 
+    void updateCameraState() const;
+    void updateStateFromCamera();
+
     const mat4& getCoordMatrix() const;
     const mat4& getInvertedMatrix() const;
+
+    LatLng getLatLng(Point<double> pixelCoordinate, double scale, LatLng::WrapMode = LatLng::Unwrapped) const;
 
 private:
     ConstrainMode constrainMode;
@@ -276,6 +285,7 @@ private:
     bool axonometric = false;
 
     EdgeInsets edgeInsets;
+    mutable util::Camera camera;
 
     // cache values for spherical mercator math
     double Bc = Projection::worldSize(scale) / util::DEGREES_MAX;

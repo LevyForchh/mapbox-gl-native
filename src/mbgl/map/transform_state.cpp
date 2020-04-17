@@ -101,54 +101,13 @@ void TransformState::getProjMatrix(mat4& projMatrix, uint16_t nearZ, bool aligne
     // Add a bit extra to avoid precision problems when a fragment's distance is exactly `furthestDistance`
     const double farZ = furthestDistance * 1.01;
 
-    matrix::perspective(projMatrix, getFieldOfView(), double(size.width) / size.height, nearZ, farZ);
+    // Make sure the camera state is up-to-date
+    updateCameraState();
 
-    // Move the center of perspective to center of specified edgeInsets.
-    // Values are in range [-1, 1] where the upper and lower range values
-    // position viewport center to the screen edges. This is overriden
-    // if using axonometric perspective (not in public API yet, Issue #11882).
-    // TODO(astojilj): Issue #11882 should take edge insets into account, too.
-    projMatrix[8] = -offset.x * 2.0 / size.width;
-    projMatrix[9] = offset.y * 2.0 / size.height;
+    mat4 worldToCamera = camera.getWorldToCamera(getZoom(), viewportMode == ViewportMode::FlippedY);
+    mat4 cameraToClip = camera.getCameraToClipPerspective(nearZ, farZ);
 
-    const bool flippedY = viewportMode == ViewportMode::FlippedY;
-    matrix::scale(projMatrix, projMatrix, 1.0, flippedY ? 1 : -1, 1);
-
-    matrix::translate(projMatrix, projMatrix, 0, 0, -cameraToCenterDistance);
-
-    using NO = NorthOrientation;
-    switch (getNorthOrientation()) {
-        case NO::Rightwards:
-            matrix::rotate_y(projMatrix, projMatrix, getPitch());
-            break;
-        case NO::Downwards:
-            matrix::rotate_x(projMatrix, projMatrix, -getPitch());
-            break;
-        case NO::Leftwards:
-            matrix::rotate_y(projMatrix, projMatrix, -getPitch());
-            break;
-        default:
-            matrix::rotate_x(projMatrix, projMatrix, getPitch());
-            break;
-    }
-
-    matrix::rotate_z(projMatrix, projMatrix, getBearing() + getNorthOrientationAngle());
-
-    const double dx = pixel_x() - size.width / 2.0f;
-    const double dy = pixel_y() - size.height / 2.0f;
-    matrix::translate(projMatrix, projMatrix, dx, dy, 0);
-
-    if (axonometric) {
-        // mat[11] controls perspective
-        projMatrix[11] = 0;
-
-        // mat[8], mat[9] control x-skew, y-skew
-        projMatrix[8] = xSkew;
-        projMatrix[9] = ySkew;
-    }
-
-    matrix::scale(projMatrix, projMatrix, 1, 1,
-                  1.0 / Projection::getMetersPerPixelAtLatitude(getLatLng(LatLng::Unwrapped).latitude(), getZoom()));
+    matrix::multiply(projMatrix, cameraToClip, worldToCamera);
 
     // Make a second projection matrix that is aligned to a pixel grid for rendering raster tiles.
     // We're rounding the (floating point) x/y values to achieve to avoid rendering raster images to fractional
@@ -156,6 +115,10 @@ void TransformState::getProjMatrix(mat4& projMatrix, uint16_t nearZ, bool aligne
     // is an odd integer to preserve rendering to the pixel grid. We're rotating this shift based on the angle
     // of the transformation so that 0°, 90°, 180°, and 270° rasters are crisp, and adjust the shift so that
     // it is always <= 0.5 pixels.
+    const double worldSize = Projection::worldSize(scale);
+    const double dx = x - 0.5 * worldSize;
+    const double dy = x - 0.5 * worldSize;
+
     if (aligned) {
         const float xShift = float(size.width % 2) / 2;
         const float yShift = float(size.height % 2) / 2;
@@ -165,6 +128,89 @@ void TransformState::getProjMatrix(mat4& projMatrix, uint16_t nearZ, bool aligne
         const float dxa = -std::modf(dx, &devNull) + bearingCos * xShift + bearingSin * yShift;
         const float dya = -std::modf(dy, &devNull) + bearingCos * yShift + bearingSin * xShift;
         matrix::translate(projMatrix, projMatrix, dxa > 0.5 ? dxa - 1 : dxa, dya > 0.5 ? dya - 1 : dya, 0);
+    }
+}
+
+void TransformState::updateCameraState() const {
+    const double worldSize = Projection::worldSize(scale);
+    const double cameraToCenterDistance = getCameraToCenterDistance();
+
+    // Update camera position to match the transform state
+    camera.setFovY(getFieldOfView());
+    camera.setSize(size);
+
+    // x & y tracks the center of the map in pixels. However as rendering is done in pixel coordinates the rendering
+    // origo is actually in the middle of the map (0.5 * worldSize). x&y positions have to be negated because it defines
+    // position of the map, not the camera. Moving map 10 units left has same effect as moving camera 10 units to the right.
+    const double dx = 0.5 * worldSize - x;
+    const double dy = 0.5 * worldSize - y;
+
+    // Set camera orientation and move it to a proper distance from the map
+    camera.setOrientation(getPitch(), getBearing());
+
+    const vec3 forward = camera.forward();
+    const vec3 orbitPosition = { -forward[0] * cameraToCenterDistance, -forward[1] * cameraToCenterDistance, -forward[2] * cameraToCenterDistance };
+    vec3 cameraPosition = {dx + orbitPosition[0], dy + orbitPosition[1], orbitPosition[2]};
+
+    cameraPosition[0] /= worldSize;
+    cameraPosition[1] /= worldSize;
+    cameraPosition[2] /= worldSize;
+
+    camera.setPosition(cameraPosition);
+}
+
+void TransformState::updateStateFromCamera() {
+    const vec3 position = camera.getPosition();
+    const vec3 forward = camera.forward();
+
+    const double dx = forward[0];
+    const double dy = forward[1];
+    const double dz = forward[2];
+
+    assert(position[2] > 0.0 && dz < 0.0);
+
+    // Compute bearing and pitch
+    double newBearing, newPitch;
+    camera.getOrientation(newPitch, newBearing);
+    newPitch = util::clamp(newPitch, minPitch, maxPitch);
+
+    // Compute zoom level from the camera altitude
+    const double centerDistance = getCameraToCenterDistance();
+    const double zoom = util::log2(centerDistance / (position[2] / std::cos(newPitch) * util::tileSize));
+    const double newScale = util::clamp(std::pow(2.0, zoom), min_scale, max_scale);
+    const double worldSize = Projection::worldSize(newScale);
+
+    // Compute center point of the map
+    const double travel = -position[2] / dz;
+
+    const Point<double> mercatorPoint = {
+        position[0] + dx * travel,
+        position[1] + dy * travel
+    };
+
+    setLatLngZoom(getLatLng({ (0.5 - mercatorPoint.x) * worldSize, (0.5 - mercatorPoint.y) * worldSize}, newScale), scaleZoom(newScale));
+    setBearing(newBearing);
+    setPitch(newPitch);
+}
+
+util::Camera TransformState::getTrueCamera() const {
+    updateCameraState();
+    return camera;
+}
+
+void TransformState::setTrueCamera(const util::Camera& camera_) {
+    if (camera.getOrientation() != camera_.getOrientation() || camera.getPosition() != camera_.getPosition()) {
+        // Copy only position and orientation from the passed camera
+        // Note: constraints are applied when updating state from the camera
+        double newPitch, newBearing;
+        camera_.getOrientation(newPitch, newBearing);
+        const vec3 newPosition = camera_.getPosition();
+
+        camera.setOrientation(newPitch, newBearing);
+        camera.setPosition(newPosition);
+
+        updateStateFromCamera();
+        requestMatricesUpdate = true;
     }
 }
 
@@ -201,6 +247,13 @@ const mat4& TransformState::getCoordMatrix() const {
 const mat4& TransformState::getInvertedMatrix() const {
     updateMatricesIfNeeded();
     return invertedMatrix;
+}
+
+LatLng TransformState::getLatLng(Point<double> pixelCoordinate, double scale, LatLng::WrapMode wrapMode) const {
+    const double worldSize = Projection::worldSize(scale);
+    const double bc = worldSize / util::DEGREES_MAX;
+    const double cc = worldSize / util::M2PI;
+    return {util::RAD2DEG * (2 * std::atan(std::exp(pixelCoordinate.y / cc)) - 0.5 * M_PI), -pixelCoordinate.x / bc, wrapMode};
 }
 
 #pragma mark - Dimensions
@@ -644,6 +697,7 @@ void TransformState::setScalePoint(const double newScale, const ScreenCoordinate
     constrain(constrainedScale, constrainedPoint.x, constrainedPoint.y);
 
     scale = constrainedScale;
+
     x = constrainedPoint.x;
     y = constrainedPoint.y;
     Bc = Projection::worldSize(scale) / util::DEGREES_MAX;
